@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'LinkFlowSDK'
-  s.version          = '1.0.0'
+  s.version          = '2.0.0'
   s.summary          = 'Mobile attribution and deep linking SDK for iOS'
   s.description      = <<-DESC
     LinkFlow SDK provides deferred deep linking, attribution tracking, and event tracking for iOS apps.
