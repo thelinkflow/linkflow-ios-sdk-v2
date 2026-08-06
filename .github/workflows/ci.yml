@@ -21,12 +21,45 @@ jobs:
             -destination "generic/platform=iOS Simulator" \
             CODE_SIGNING_ALLOWED=NO
 
+      # Pick whatever iPhone simulator the runner image actually ships instead of
+      # hardcoding a model. The previous "iPhone 16" pin passed in April 2026 and
+      # now fails on the Xcode 26.6 image, which ships iPhone 17 era devices only
+      # — a hardcoded device name breaks on every runner image bump.
+      - name: Select an iOS Simulator
+        id: sim
+        run: |
+          cat > "${RUNNER_TEMP}/pick-sim.py" <<'PY'
+          import json, subprocess, sys
+
+          result = subprocess.run(
+              ["xcrun", "simctl", "list", "devices", "available", "--json"],
+              capture_output=True, text=True, check=True,
+          )
+          runtimes = json.loads(result.stdout)["devices"]
+
+          iphones = [
+              device
+              for runtime, devices in runtimes.items() if "iOS" in runtime
+              for device in devices if device["name"].startswith("iPhone")
+          ]
+          if not iphones:
+              sys.exit("No iOS Simulator iPhone is available on this runner")
+
+          # Last entry is the newest runtime/model the image provides.
+          chosen = iphones[-1]
+          print(f"{chosen['udid']}\t{chosen['name']}", end="")
+          PY
+
+          IFS=$'\t' read -r UDID NAME < <(python3 "${RUNNER_TEMP}/pick-sim.py")
+          echo "Selected simulator: ${NAME} (${UDID})"
+          echo "udid=${UDID}" >> "$GITHUB_OUTPUT"
+
       - name: Run tests (iOS Simulator)
         run: |
           xcodebuild test \
             -scheme LinkFlowSDK \
             -sdk iphonesimulator \
-            -destination "platform=iOS Simulator,OS=latest,name=iPhone 16" \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
             CODE_SIGNING_ALLOWED=NO
 
       - name: Validate CocoaPods
