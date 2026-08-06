@@ -47,11 +47,15 @@ jobs:
 
           # Last entry is the newest runtime/model the image provides.
           chosen = iphones[-1]
-          print(f"{chosen['udid']}\t{chosen['name']}", end="")
+          # Human-readable line to stderr so it shows in the log without
+          # becoming part of the captured value.
+          print(f"Selected simulator: {chosen['name']} ({chosen['udid']})", file=sys.stderr)
+          print(chosen["udid"])
           PY
 
-          IFS=$'\t' read -r UDID NAME < <(python3 "${RUNNER_TEMP}/pick-sim.py")
-          echo "Selected simulator: ${NAME} (${UDID})"
+          # Plain command substitution: `read` returns non-zero at EOF, which
+          # aborts the step under the `bash -e` that Actions uses.
+          UDID=$(python3 "${RUNNER_TEMP}/pick-sim.py")
           echo "udid=${UDID}" >> "$GITHUB_OUTPUT"
 
       - name: Run tests (iOS Simulator)
