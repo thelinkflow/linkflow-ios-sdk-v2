@@ -50,6 +50,12 @@ public struct LinkFlowConfig {
     /// Per-request timeout, in seconds.
     public let timeout: TimeInterval
 
+    /// 2.1.0+: let the SDK set SKAdNetwork / AdAttributionKit conversion values
+    /// from the schema approved in the LinkFlow dashboard. Off by default so an
+    /// app that already manages its own conversion values is never overridden.
+    /// Requires an `appKey`.
+    public let manageConversionValues: Bool
+
     public init(
         apiBaseURL: String = LinkFlowConfig.defaultAPIBaseURL,
         appKey: String? = nil,
@@ -58,7 +64,8 @@ public struct LinkFlowConfig {
         collectAdvertisingID: Bool = true,
         maxRetries: Int = 4,
         retryBaseDelay: TimeInterval = 1.0,
-        timeout: TimeInterval = 15.0
+        timeout: TimeInterval = 15.0,
+        manageConversionValues: Bool = false
     ) {
         self.apiBaseURL = apiBaseURL
         self.appKey = appKey
@@ -68,19 +75,71 @@ public struct LinkFlowConfig {
         self.maxRetries = maxRetries
         self.retryBaseDelay = retryBaseDelay
         self.timeout = timeout
+        self.manageConversionValues = manageConversionValues
     }
 }
 
 /// User consent state.
+///
+/// The granular fields (2.1.0+) are forwarded with the attribution request so
+/// partner forwarding can honour GDPR / TCF v2 and Google consent mode v2 (EU
+/// DMA). Each is optional — nil means "not reported". The original
+/// `init(attribution:advertisingID:)` call shape is unchanged.
 public struct LinkFlowConsent {
     /// Permits attribution resolution and event reporting.
     public let attribution: Bool
     /// Permits reading the advertising identifier.
     public let advertisingID: Bool
+    /// True when the user is subject to GDPR / the DMA.
+    public let gdprApplies: Bool?
+    /// IAB TCF v2 consent string from your CMP, if any.
+    public let tcfString: String?
+    /// Google consent mode v2 `ad_user_data`.
+    public let adUserData: Bool?
+    /// Google consent mode v2 `ad_personalization`.
+    public let adPersonalization: Bool?
 
-    public init(attribution: Bool, advertisingID: Bool? = nil) {
+    public init(
+        attribution: Bool,
+        advertisingID: Bool? = nil,
+        gdprApplies: Bool? = nil,
+        tcfString: String? = nil,
+        adUserData: Bool? = nil,
+        adPersonalization: Bool? = nil
+    ) {
         self.attribution = attribution
         self.advertisingID = advertisingID ?? attribution
+        self.gdprApplies = gdprApplies
+        self.tcfString = tcfString
+        self.adUserData = adUserData
+        self.adPersonalization = adPersonalization
+    }
+
+    /// True when any granular signal was supplied, i.e. worth sending.
+    public var hasGranularSignals: Bool {
+        gdprApplies != nil || tcfString != nil || adUserData != nil || adPersonalization != nil
+    }
+
+    /// The server's `consent` object: only the fields that were reported.
+    public var serverPayload: [String: Any] {
+        var payload: [String: Any] = ["analytics": attribution]
+        if let gdprApplies { payload["gdprApplies"] = gdprApplies }
+        if let tcfString { payload["tcfString"] = tcfString }
+        if let adUserData { payload["adUserData"] = adUserData }
+        if let adPersonalization { payload["adPersonalization"] = adPersonalization }
+        return payload
+    }
+}
+
+// MARK: - Timestamps
+
+public enum LinkFlowTimestamp {
+    /// ISO-8601 UTC with milliseconds, the format the server binds `eventTimestamp` from.
+    public static func iso8601(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        return formatter.string(from: date)
     }
 }
 
@@ -403,6 +462,7 @@ extension URL {
 enum LinkFlowRedaction {
     static let sensitiveKeys: Set<String> = [
         "advertisingId", "idfa", "idfv", "vendorId", "clickToken", "installToken", "installReferrer",
+        "customerUserId",
     ]
 
     /// Strips identifiers before a payload reaches the log.

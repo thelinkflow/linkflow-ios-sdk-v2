@@ -19,14 +19,14 @@ Add to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/thelinkflow/linkflow-ios-sdk.git", from: "1.0.0")
+    .package(url: "https://github.com/thelinkflow/linkflow-ios-sdk.git", from: "2.1.0")
 ]
 ```
 
 ### CocoaPods
 
 ```ruby
-pod 'LinkFlowSDK', '~> 1.0'
+pod 'LinkFlowSDK', '~> 2.1'
 ```
 
 ## Quick Start
@@ -61,6 +61,32 @@ extension AppDelegate: AttributionCallback {
     func onDeepLinkReceived(_ url: URL) {}
 }
 ```
+
+## What's new in 2.1
+
+```swift
+LinkFlowSDK.initialize(config: LinkFlowConfig(
+    appKey: "lfa_...",
+    manageConversionValues: true   // opt-in: SKAN / AdAttributionKit values from your dashboard schema
+))
+
+// After login (nil on logout):
+try? LinkFlowSDK.shared().setCustomerUserId("user-123")
+
+// Granular consent — all optional:
+try? LinkFlowSDK.shared().setConsent(LinkFlowConsent(
+    attribution: true, gdprApplies: true, tcfString: tcString, adUserData: true, adPersonalization: false))
+```
+
+**Conversion values.** Approve a schema in *Measurement Lab → SKAN &
+AdAttributionKit* (or accept the predicted-LTV recommendation). With
+`manageConversionValues` on, the SDK registers the install on first launch and
+raises the fine/coarse value as revenue and events arrive inside the first
+measurement window — AdAttributionKit on iOS 17.4+, SKAdNetwork 4 on 16.1+.
+To receive developer copies of postbacks, set `NSAdvertisingAttributionReportEndpoint`
+and `AttributionCopyEndpoint` in Info.plist to your verified LinkFlow custom domain.
+
+Everything is opt-in and 2.0 code compiles unchanged.
 
 ## Reward Integration (Phase 3)
 

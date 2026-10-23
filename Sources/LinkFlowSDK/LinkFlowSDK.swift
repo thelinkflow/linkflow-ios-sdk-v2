@@ -103,6 +103,7 @@ public typealias AttributionCallback = (AttributionResult) -> Void
     private let store: LinkFlowStore
     private let http: LinkFlowHTTPClient
     private let eventQueue: EventQueue
+    private let conversionStore: ConversionValueStore
 
     private var attributionCallback: AttributionCallback?
     private let stateLock = NSLock()
@@ -113,7 +114,7 @@ public typealias AttributionCallback = (AttributionResult) -> Void
     private var cachedResult: AttributionResult?
 
     /// Reported to the server as `sdkVersion`.
-    @objc public static let sdkVersion = "2.0.0"
+    @objc public static let sdkVersion = "2.1.0"
 
     // MARK: Initialization
 
@@ -122,6 +123,7 @@ public typealias AttributionCallback = (AttributionResult) -> Void
         self.store = LinkFlowStore()
         self.http = LinkFlowHTTPClient(config: config)
         self.eventQueue = EventQueue(directory: EventQueue.defaultDirectory())
+        self.conversionStore = ConversionValueStore(directory: EventQueue.defaultDirectory())
 
         if !config.requireConsent {
             self.consent = LinkFlowConsent(attribution: true, advertisingID: config.collectAdvertisingID)
@@ -233,6 +235,7 @@ public typealias AttributionCallback = (AttributionResult) -> Void
                 await resolveAttribution(launchURL: url)
             }
             await flushEventQueue()
+            await refreshConversionSchemaAndRegister()
         }
     }
 
@@ -276,9 +279,34 @@ public typealias AttributionCallback = (AttributionResult) -> Void
         var payload: [String: Any] = ["eventName": eventName]
         if let params { payload["eventParams"] = params }
         if let revenue { payload["revenue"] = revenue.doubleValue }
+        // When it happened, not when it was finally delivered.
+        payload["eventTimestamp"] = LinkFlowTimestamp.iso8601(Date())
+        if let customerUserID = store.customerUserID { payload["customerUserId"] = customerUserID }
 
         eventQueue.enqueue(payload)
+        updateConversionValue(eventName: eventName, revenue: revenue?.doubleValue)
         Task { await flushEventQueue() }
+    }
+
+    // MARK: Customer user id
+
+    /// Associates your own user id with this install (2.1.0+), e.g. after login.
+    ///
+    /// Sent with the attribution request when already set at first launch, with
+    /// every later event, and bound to an existing install via
+    /// `/api/attribution/identify` (retried on the next launch when offline).
+    /// Pass nil on logout to stop attaching it to new events.
+    @objc public func setCustomerUserId(_ customerUserID: String?) {
+        let trimmed = customerUserID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        store.customerUserID = value
+        store.pendingIdentify = value != nil
+        if value != nil { Task { await flushIdentify() } }
+    }
+
+    /// The id last passed to ``setCustomerUserId(_:)``, if any.
+    @objc public func getCustomerUserId() -> String? {
+        store.customerUserID
     }
 
     /// The most recent attribution result, restored from disk if needed.
@@ -325,6 +353,12 @@ public typealias AttributionCallback = (AttributionResult) -> Void
         if let clickToken {
             payload["clickToken"] = clickToken
         }
+        if let customerUserID = store.customerUserID {
+            payload["customerUserId"] = customerUserID
+        }
+        if let granted = stateLock.withLock({ consent }), granted.hasGranularSignals {
+            payload["consent"] = granted.serverPayload
+        }
 
         log("Resolving attribution: \(LinkFlowRedaction.redact(payload))")
 
@@ -368,6 +402,8 @@ public typealias AttributionCallback = (AttributionResult) -> Void
                 store.installToken = token
             }
             store.lastResultJSON = json
+            // The resolve request already carried the customer user id, if set.
+            store.pendingIdentify = false
         }
 
         let result = AttributionResult(parsed: parsed)
@@ -398,7 +434,74 @@ public typealias AttributionCallback = (AttributionResult) -> Void
 
     // MARK: - Event delivery
 
+    /// Binds a pending customer user id to the attributed install.
+    private func flushIdentify() async {
+        guard store.pendingIdentify,
+              let installID = store.installID,
+              let customerUserID = store.customerUserID,
+              stateLock.withLock({ consent })?.attribution == true else { return }
+
+        var payload: [String: Any] = ["installId": installID, "customerUserId": customerUserID]
+        if let token = store.installToken { payload["installToken"] = token }
+        guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
+
+        switch await http.send(path: "/api/attribution/identify", method: "POST", body: body) {
+        case .success:
+            store.pendingIdentify = false
+        case .permanentFailure(let code, _):
+            // 404 from a pre-2.1 server: nothing to retry against.
+            log("Identify rejected (HTTP \(code)); not retrying")
+            store.pendingIdentify = false
+        case .transientFailure:
+            log("Identify deferred; will retry on next launch")
+        }
+    }
+
+    // MARK: - Conversion values (SKAdNetwork / AdAttributionKit)
+
+    /// Fetches the approved schema (cached by revision) and, on the very first
+    /// launch, registers the install with value 0 / low as Apple recommends.
+    private func refreshConversionSchemaAndRegister() async {
+        guard config.manageConversionValues, let appKey = config.appKey, !appKey.isEmpty else { return }
+
+        var path = "/api/skan/conversion-schema"
+        if let bundleID = Bundle.main.bundleIdentifier,
+           let encoded = bundleID.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+            path += "?bundleId=\(encoded)"
+        }
+
+        switch await http.send(path: path, method: "GET", body: nil) {
+        case .success(let data):
+            if let parsed = ConversionSchemaResponse.parse(data) {
+                conversionStore.saveSchema(.init(revision: parsed.revision, schema: parsed.schema, fetchedAt: Date()))
+                log("Conversion schema revision \(parsed.revision) loaded")
+            }
+        case .permanentFailure(let code, _):
+            log("No conversion schema available (HTTP \(code))")
+        case .transientFailure:
+            log("Conversion schema fetch deferred")
+        }
+
+        if conversionStore.loadState() == nil {
+            conversionStore.saveState(ConversionValueState(firstLaunch: Date()))
+            updateConversionValue(eventName: nil, revenue: nil)
+        }
+    }
+
+    private func updateConversionValue(eventName: String?, revenue: Double?) {
+        guard config.manageConversionValues,
+              let cached = conversionStore.loadSchema() else { return }
+        var state = conversionStore.loadState() ?? ConversionValueState(firstLaunch: Date())
+        let update = ConversionValueEngine.record(
+            state: &state, schema: cached.schema, eventName: eventName, revenue: revenue, now: Date())
+        conversionStore.saveState(state)
+        if let update {
+            AppleConversionValueReporter.report(update) { [weak self] message in self?.log(message) }
+        }
+    }
+
     private func flushEventQueue() async {
+        await flushIdentify()
         guard let installID = store.installID else {
             if eventQueue.count() > 0 {
                 log("Holding \(eventQueue.count()) event(s): attribution has not produced an install id yet")

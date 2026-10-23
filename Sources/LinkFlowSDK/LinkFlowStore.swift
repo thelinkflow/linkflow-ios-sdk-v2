@@ -25,6 +25,8 @@ final class LinkFlowStore {
         static let installToken = "com.linkflow.sdk.installToken"
         static let attributionComplete = "linkflow_attribution_complete"
         static let lastResult = "linkflow_last_attribution_result"
+        static let customerUserID = "linkflow_customer_user_id"
+        static let pendingIdentify = "linkflow_pending_identify"
 
         /// Pre-2.0 keys, read once so an upgrading app does not re-resolve.
         static let legacyInstallID = "linkflow_install_id"
@@ -70,6 +72,20 @@ final class LinkFlowStore {
     var lastResultJSON: [String: Any]? {
         get { defaults.dictionary(forKey: Key.lastResult) }
         set { defaults.set(newValue, forKey: Key.lastResult) }
+    }
+
+    // MARK: - Customer user id (2.1.0+)
+
+    /// Not a secret and not device identity, so UserDefaults (not the Keychain).
+    var customerUserID: String? {
+        get { defaults.string(forKey: Key.customerUserID) }
+        set { defaults.set(newValue, forKey: Key.customerUserID) }
+    }
+
+    /// True while a customer user id still has to be bound via /identify.
+    var pendingIdentify: Bool {
+        get { defaults.bool(forKey: Key.pendingIdentify) }
+        set { defaults.set(newValue, forKey: Key.pendingIdentify) }
     }
 
     /// Test/reset hook.

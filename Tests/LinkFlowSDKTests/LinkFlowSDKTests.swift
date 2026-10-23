@@ -348,3 +348,90 @@ final class LinkFlowSDKSurfaceTests: XCTestCase {
     }
 }
 #endif
+
+// MARK: - 2.1.0: consent signals, timestamps, conversion values
+
+final class LinkFlow21Tests: XCTestCase {
+
+    func testLegacyConsentShapeHasNoGranularSignals() {
+        let consent = LinkFlowConsent(attribution: true, advertisingID: false)
+        XCTAssertFalse(consent.hasGranularSignals)
+        XCTAssertEqual(consent.serverPayload["analytics"] as? Bool, true)
+        XCTAssertNil(consent.serverPayload["tcfString"])
+    }
+
+    func testGranularConsentIsSerialised() {
+        let consent = LinkFlowConsent(attribution: true, gdprApplies: true, tcfString: "CP-x", adPersonalization: false)
+        XCTAssertTrue(consent.hasGranularSignals)
+        XCTAssertEqual(consent.serverPayload["tcfString"] as? String, "CP-x")
+        XCTAssertEqual(consent.serverPayload["adPersonalization"] as? Bool, false)
+        XCTAssertNil(consent.serverPayload["adUserData"])
+    }
+
+    func testManagedConversionValuesAreOptIn() {
+        XCTAssertFalse(LinkFlowConfig().manageConversionValues)
+    }
+
+    func testTimestampIsISO8601UTC() {
+        XCTAssertEqual(LinkFlowTimestamp.iso8601(Date(timeIntervalSince1970: 0)), "1970-01-01T00:00:00.000Z")
+    }
+
+    private func schema() -> ConversionSchema {
+        ConversionSchema(
+            revenueBands: [.init(fineValue: 0, minRevenue: 0), .init(fineValue: 10, minRevenue: 0.99), .init(fineValue: 20, minRevenue: 4.99)],
+            eventFloors: ["tutorial_complete": 5],
+            coarseMediumMinRevenue: 0.99,
+            coarseHighMinRevenue: 9.99,
+            mediumEvents: ["tutorial_complete"],
+            measurementWindowHours: 48,
+            lockWindowAtRevenue: 50)
+    }
+
+    /// Must match the server's ConversionSchema.Evaluate exactly (see SkanTests on the server).
+    func testSchemaEvaluationMatchesServer() {
+        let s = schema()
+        XCTAssertEqual(s.evaluate(revenue: 0, eventsSeen: []).fine, 0)
+        XCTAssertEqual(s.evaluate(revenue: 0, eventsSeen: []).coarse, .low)
+        XCTAssertEqual(s.evaluate(revenue: 0, eventsSeen: ["tutorial_complete"]).fine, 5)
+        XCTAssertEqual(s.evaluate(revenue: 0, eventsSeen: ["tutorial_complete"]).coarse, .medium)
+        XCTAssertEqual(s.evaluate(revenue: 12, eventsSeen: []).fine, 20)
+        XCTAssertEqual(s.evaluate(revenue: 12, eventsSeen: []).coarse, .high)
+    }
+
+    func testEngineOnlyReportsIncreasesInsideTheWindow() {
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        var state = ConversionValueState(firstLaunch: start)
+        let s = schema()
+
+        XCTAssertEqual(ConversionValueEngine.record(state: &state, schema: s, eventName: nil, revenue: nil, now: start)?.fine, 0)
+        XCTAssertNil(ConversionValueEngine.record(state: &state, schema: s, eventName: "open", revenue: nil, now: start))
+        XCTAssertEqual(ConversionValueEngine.record(state: &state, schema: s, eventName: "purchase", revenue: 1.99, now: start)?.fine, 10)
+        XCTAssertEqual(ConversionValueEngine.record(state: &state, schema: s, eventName: "purchase", revenue: 3.0, now: start)?.fine, 20)
+        XCTAssertEqual(state.cumulativeRevenue, 4.99, accuracy: 1e-9)
+
+        // Outside the 48h window nothing is reported or accumulated.
+        let late = start.addingTimeInterval(49 * 3600)
+        XCTAssertNil(ConversionValueEngine.record(state: &state, schema: s, eventName: "purchase", revenue: 100, now: late))
+        XCTAssertEqual(state.cumulativeRevenue, 4.99, accuracy: 1e-9)
+    }
+
+    func testEngineLocksAtTheConfiguredRevenue() {
+        let start = Date()
+        var state = ConversionValueState(firstLaunch: start)
+        let update = ConversionValueEngine.record(state: &state, schema: schema(), eventName: "purchase", revenue: 60, now: start)
+        XCTAssertEqual(update?.lockWindow, true)
+        XCTAssertNil(ConversionValueEngine.record(state: &state, schema: schema(), eventName: "purchase", revenue: 60, now: start))
+    }
+
+    func testSchemaResponseParsingToleratesUnknownAndMissingFields() {
+        let json = #"{"revision":3,"bundleId":null,"schema":{"schemaVersion":1,"revenueBands":[{"fineValue":1,"minRevenue":0.5}],"futureField":true}}"#
+        let parsed = ConversionSchemaResponse.parse(Data(json.utf8))
+        XCTAssertEqual(parsed?.revision, 3)
+        XCTAssertEqual(parsed?.schema.revenueBands.first?.fineValue, 1)
+        XCTAssertEqual(parsed?.schema.measurementWindowHours, 48)
+    }
+
+    func testCustomerUserIdIsRedactedFromLogs() {
+        XCTAssertEqual(LinkFlowRedaction.redact(["customerUserId": "u1"])["customerUserId"] as? String, "«redacted»")
+    }
+}

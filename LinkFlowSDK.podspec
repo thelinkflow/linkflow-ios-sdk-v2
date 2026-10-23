@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'LinkFlowSDK'
-  s.version          = '2.0.0'
+  s.version          = '2.1.0'
   s.summary          = 'Mobile attribution and deep linking SDK for iOS'
   s.description      = <<-DESC
     LinkFlow SDK provides deferred deep linking, attribution tracking, and event tracking for iOS apps.
@@ -17,5 +17,7 @@ Pod::Spec.new do |s|
 
   s.source_files = 'Sources/LinkFlowSDK/**/*'
 
-  s.frameworks = 'UIKit', 'Foundation', 'AdSupport', 'AppTrackingTransparency'
+  s.frameworks = 'UIKit', 'Foundation', 'AdSupport', 'AppTrackingTransparency', 'StoreKit'
+  # iOS 17.4+ only; weak so the SDK still loads on older systems.
+  s.weak_frameworks = 'AdAttributionKit'
 end

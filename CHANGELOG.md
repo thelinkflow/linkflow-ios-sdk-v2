@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-10-14
+
+### Added
+- **Managed SKAdNetwork / AdAttributionKit conversion values** (opt-in:
+  `LinkFlowConfig(manageConversionValues: true)`, requires an `appKey`). The SDK
+  fetches the conversion-value schema approved in the LinkFlow dashboard,
+  registers the install on first launch, and updates the value as revenue and
+  events arrive during the measurement window — via AdAttributionKit on iOS
+  17.4+ and SKAdNetwork 4 on iOS 16.1+ (fine value only on 15.4–16.0). Values
+  only ever increase, and the window can lock early at a configured revenue.
+  The server decodes Apple's postbacks with the same schema.
+- `setCustomerUserId(_:)` / `getCustomerUserId()`: binds your own user id to the
+  install (resolve request, events, and `/api/attribution/identify`).
+- Granular consent signals on `LinkFlowConsent`: `gdprApplies`, `tcfString`,
+  `adUserData`, `adPersonalization`.
+- Events carry `eventTimestamp`, the time they happened on the device.
+- `StoreKit` linked, `AdAttributionKit` weak-linked in the podspec.
+
+### Compatibility
+- **Fully backward compatible.** Every 2.0 call site compiles and behaves the
+  same; all additions are optional. The SDK still works against servers that
+  predate 2.1: the extra request fields are ignored, and a 404 from
+  `/api/attribution/identify` stops the retry instead of looping.
+- Older SDK builds keep working against the 2.1 server: it accepts the 1.x and
+  2.0 payload shapes unchanged (pinned by server contract tests).
+- Conversion-value management is **off by default**, so apps that set their
+  own conversion values are never overridden.
+
 ## [2.0.0] - 2026-08-05
 
 ### Fixed
